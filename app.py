@@ -6,6 +6,7 @@ import io
 import uuid
 import os
 from dotenv import load_dotenv
+from fpdf import FPDF
 
 # Load environment variables from a .env file if it exists
 load_dotenv()
@@ -19,7 +20,7 @@ st.set_page_config(
 
 # --- App Title and Description ---
 st.title("🤖 Automated Report Generator")
-st.markdown("Welcome! This tool helps you create professional audit reports. Describe an observation, optionally upload an image, and let AI generate the recommendation.")
+st.markdown("Welcome! This tool helps you create professional audit reports. Describe an observation, set a priority, optionally upload an image, and let AI generate the recommendation.")
 
 # --- Gemini API Configuration ---
 api_key = os.getenv("GOOGLE_API_KEY")
@@ -72,22 +73,57 @@ def generate_recommendation_text_only(text):
         st.error(f"An error occurred while generating the recommendation: {e}")
         return None
 
+def to_pdf(observations_list):
+    """Converts the list of observations to a PDF file."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(200, 10, "Audit Report", ln=True, align="C")
+    pdf.ln(10)
 
-def to_csv(observations_list):
-    """Converts the list of observations to a CSV string."""
-    if not observations_list:
-        return ""
-    # Create a DataFrame, excluding the image and id objects
-    df_data = [
-        {
-            "Sr. No.": len(observations_list) - i,
-            "Observation": obs["observation_text"],
-            "Recommendation": obs["recommendation"],
-        }
-        for i, obs in enumerate(observations_list)
-    ]
-    df = pd.DataFrame(df_data)
-    return df.to_csv(index=False).encode('utf-8')
+    for i, obs in enumerate(observations_list):
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(200, 10, f"Observation #{len(observations_list) - i}", ln=True)
+        
+        # Priority
+        pdf.set_font("Arial", "B", 10)
+        pdf.cell(30, 10, "Priority:")
+        pdf.set_font("Arial", "", 10)
+        pdf.cell(160, 10, obs["priority"], ln=True)
+
+        # Observation Text
+        pdf.set_font("Arial", "B", 10)
+        pdf.multi_cell(0, 10, "Observation:")
+        pdf.set_font("Arial", "", 10)
+        pdf.multi_cell(0, 5, obs["observation_text"])
+        pdf.ln(5)
+
+        # Recommendation Text
+        pdf.set_font("Arial", "B", 10)
+        pdf.multi_cell(0, 10, "Recommendation:")
+        pdf.set_font("Arial", "", 10)
+        pdf.multi_cell(0, 5, obs["recommendation"])
+        pdf.ln(5)
+
+        # Image
+        if obs["image"]:
+            try:
+                # Save PIL image to a byte stream
+                img_byte_arr = io.BytesIO()
+                obs["image"].save(img_byte_arr, format='PNG')
+                img_byte_arr = img_byte_arr.getvalue()
+                
+                # Add image to PDF
+                pdf.image(io.BytesIO(img_byte_arr), w=100)
+                pdf.ln(5)
+            except Exception as e:
+                pdf.set_font("Arial", "I", 8)
+                pdf.cell(0, 10, f"(Could not embed image: {e})", ln=True)
+
+        pdf.cell(0, 5, "-"*80, ln=True, align="C")
+        pdf.ln(5)
+
+    return pdf.output(dest='S').encode('latin-1')
 
 
 # --- Input Form Section ---
@@ -95,16 +131,21 @@ st.subheader("Add New Observation")
 with st.form(key="report_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
+        observation_text = st.text_area(
+            "Describe the Observation (Required)",
+            height=150,
+            placeholder="e.g., Exposed electrical wiring found near the main walkway..."
+        )
+        priority = st.selectbox(
+            "Set Priority",
+            ("Low", "Medium", "High"),
+            index=1 # Default to Medium
+        )
+    with col2:
         uploaded_image = st.file_uploader(
             "Upload Observation Image (Optional)",
             type=["png", "jpg", "jpeg", "webp"],
             help="Upload an image that clearly shows the observation."
-        )
-    with col2:
-        observation_text = st.text_area(
-            "Describe the Observation (Required)",
-            height=170,
-            placeholder="e.g., Exposed electrical wiring found near the main walkway..."
         )
     
     submit_button = st.form_submit_button(
@@ -130,8 +171,9 @@ if submit_button:
             if recommendation:
                 new_observation = {
                     "id": str(uuid.uuid4()),
-                    "image": image, # Will be None if no image was uploaded
+                    "image": image,
                     "observation_text": observation_text,
+                    "priority": priority,
                     "recommendation": recommendation
                 }
                 st.session_state.observations.insert(0, new_observation)
@@ -148,12 +190,12 @@ else:
     # --- Action Buttons (Download and Clear) ---
     col1, col2 = st.columns([0.2, 1])
     with col1:
-        csv_data = to_csv(st.session_state.observations)
+        pdf_data = to_pdf(st.session_state.observations)
         st.download_button(
-           label="📥 Download Report (CSV)",
-           data=csv_data,
-           file_name="audit_report.csv",
-           mime="text/csv",
+           label="📥 Download Report (PDF)",
+           data=pdf_data,
+           file_name="audit_report.pdf",
+           mime="application/pdf",
            use_container_width=True
         )
     with col2:
@@ -165,26 +207,28 @@ else:
     st.markdown("### Observations and Recommendations")
     
     # Table Header
-    header_cols = st.columns([0.1, 0.25, 0.3, 0.3, 0.05])
-    header_fields = ["Sr. No.", "Image", "Observation", "Recommendation", ""]
+    header_cols = st.columns([0.1, 0.2, 0.1, 0.25, 0.3, 0.05])
+    header_fields = ["Sr. No.", "Image", "Priority", "Observation", "Recommendation", ""]
     for col, field in zip(header_cols, header_fields):
         col.markdown(f"**{field}**")
 
     # Table Rows
     for i, obs in enumerate(st.session_state.observations):
-        cols = st.columns([0.1, 0.25, 0.3, 0.3, 0.05])
+        cols = st.columns([0.1, 0.2, 0.1, 0.25, 0.3, 0.05])
         cols[0].write(str(len(st.session_state.observations) - i))
         
         if obs['image']:
             cols[1].image(obs['image'], use_column_width=True)
         else:
             cols[1].markdown("*(No Image)*")
-
-        cols[2].write(obs['observation_text'])
-        cols[3].write(obs['recommendation'])
         
-        # The remove button needs a unique key
-        if cols[4].button("❌", key=f"remove_{obs['id']}"):
+        priority_color = {"Low": "green", "Medium": "orange", "High": "red"}
+        cols[2].markdown(f"**<p style='color:{priority_color[obs['priority']]}'>{obs['priority']}</p>**", unsafe_allow_html=True)
+        
+        cols[3].write(obs['observation_text'])
+        cols[4].write(obs['recommendation'])
+        
+        if cols[5].button("❌", key=f"remove_{obs['id']}"):
             st.session_state.observations = [o for o in st.session_state.observations if o['id'] != obs['id']]
             st.rerun()
         st.markdown("---")
